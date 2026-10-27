@@ -584,9 +584,9 @@ fi
 cd "$PLUGIN_SRC/scripts"
 
 CURRENT_STEP='Building Open Wallpaper Engine plugin'
-
+chmod +x build_waywallen_plugin.sh
 run_with_spinner "Building Open Wallpaper Engine plugin" \
-        bash build_waywallen_plugin.sh
+        ./build_waywallen_plugin.sh
 
 CURRENT_STEP='Copying Open Wallpaper Engine package'
 
