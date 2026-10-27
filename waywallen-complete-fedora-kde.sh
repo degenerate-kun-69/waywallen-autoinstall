@@ -291,14 +291,14 @@ info "Installing required build dependencies"
 
 sudo dnf install -y --skip-unavailable \
         cmake conda gcc gcc-c++ make ninja-build nasm ccache \
-        pkgconf-pkg-config \
+        pkgconf-pkg-config pipwire-devel libpipewire-0.3-dev\
         clang clang-tools-extra llvm llvm-devel lld \
         glslang glfw-devel \
         git git-lfs \
         curl gettext \
         rust cargo \
         vulkan-headers vulkan-loader vulkan-loader-devel \
-        libglvnd-devel \
+        libglvnd-devel libva libva-devel libva-utils\
         mesa-libGL-devel mesa-libEGL-devel mesa-libGLES-devel mesa-libgbm-devel \
         libdrm-devel libva-utils \
         freetype-devel expat-devel \
@@ -309,6 +309,8 @@ sudo dnf install -y --skip-unavailable \
         libXScrnSaver-devel libxcb-devel libxkbcommon-devel \
         alsa-lib-devel gtk3-devel nss-devel \
         gbm protobuf-compiler \
+        qt6-qtbase-private-devel \
+        qt6-qtdeclarative-private-devel \
         qt6-qtbase-devel \
         qt6-qtdeclarative-devel \
         qt6-qtwebsockets-devel \
@@ -362,8 +364,19 @@ run_with_spinner "Building Waywallen (release)" \
 
 CURRENT_STEP='Installing Waywallen'
 
+# Clean up any previous install to avoid stale files.
+if [[ -f "$HOME/.local/bin/waywallen" ]]; then
+    info "Previous Waywallen installation found; removing before reinstall."
+    run_with_spinner "Removing previous Waywallen installation" \
+        lito uninstall --prefix "$HOME/.local" --profile release || \
+        rm -f \
+            "$HOME/.local/bin/waywallen" \
+            "$HOME/.local/bin/waywallen-ui" \
+            "$HOME/.local/share/icons/hicolor/scalable/apps/org.waywallen.waywallen.svg"
+fi
+
 run_with_spinner "Installing Waywallen to ~/.local" \
-        lito install --prefix "$HOME/.local" --profile release
+    lito install --prefix "$HOME/.local" --profile release
 
 export QML_IMPORT_PATH="$HOME/.local/lib/qt6/qml"
 export LD_LIBRARY_PATH="$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -524,7 +537,7 @@ run_with_spinner "Packaging the KDE Plasma extension" \
 
 # Match the release tag and verify the result rather than passing an
 # unexpanded wildcard to kpackagetool6.
-packages=(build-kde/waywallen-kde-"$LATEST_DISPLAY"-*.zip)
+packages=(build-kde/*.zip)
 
 if ((${#packages[@]} == 0)) || [[ ! -f "${packages[0]}" ]]; then
         error "No Plasma package ZIP was produced."
