@@ -186,10 +186,11 @@ systemctl --user restart plasma-plasmashell.service
 cd $HOME
 info "Downloading and building wallpaper engine plugin"
 PLUGIN=$(curl -fsSL https://api.github.com/repos/waywallen/open-wallpaper-engine/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
-curl -fsSL "https://github.com/waywallen/waywallen/archive/refs/tags/${PLUGIN}.tar.gz" -o open-wallpaper-engine.tar.gz
+curl -fsSL "https://github.com/waywallen/open-wallpaper-engine/archive/refs/tags/${PLUGIN}.tar.gz" -o open-wallpaper-engine.tar.gz
 tar -xzf open-wallpaper-engine.tar.gz
 cd open-wallpaper-engine-${PLUGIN#v}/scripts
-
+export PYTHONNOUSERSITE=1
+conda activate base
 bash build_waywallen_plugin.sh
 
 cp $HOME/open-wallpaper-engine-${PLUGIN#v}/dist/org.waywallen.open-wallpaper-engine*.zip $HOME/Downloads

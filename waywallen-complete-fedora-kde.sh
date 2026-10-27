@@ -575,6 +575,10 @@ run_with_spinner "Extracting Open Wallpaper Engine source" \
         tar -xzf "$WORKDIR/open-wallpaper-engine.tar.gz" -C "$WORKDIR"
 
 PLUGIN_SRC="$WORKDIR/open-wallpaper-engine-${PLUGIN#v}"
+CURRENT_STEP='Building Open Wallpaper Engine plugin'
+export PYTHONNOUSERSITE=1
+conda activate base
+lito build --profile release
 
 if [[ ! -d "$PLUGIN_SRC/scripts" ]]; then
         error "Open Wallpaper Engine build scripts were not found."
@@ -583,7 +587,7 @@ fi
 
 cd "$PLUGIN_SRC/scripts"
 
-CURRENT_STEP='Building Open Wallpaper Engine plugin'
+
 chmod +x build_waywallen_plugin.sh
 run_with_spinner "Building Open Wallpaper Engine plugin" \
         ./build_waywallen_plugin.sh
