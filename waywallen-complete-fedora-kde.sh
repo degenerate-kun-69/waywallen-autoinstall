@@ -300,8 +300,8 @@ sudo dnf install -y --skip-unavailable \
         vulkan-headers vulkan-loader vulkan-loader-devel \
         libglvnd-devel libva libva-devel libva-utils\
         mesa-libGL-devel mesa-libEGL-devel mesa-libGLES-devel mesa-libgbm-devel \
-        libdrm-devel libva-utils \
-        freetype-devel expat-devel \
+        libdrm-devel libva-utils pipewire-devel\
+        pulseaudio-libs-devel pulseaudio-libs freetype-devel expat-devel \
         lz4-devel zlib-ng-compat-devel \
         wayland-devel wayland-protocols-devel \
         libX11-devel libXcomposite-devel libXdamage-devel \
