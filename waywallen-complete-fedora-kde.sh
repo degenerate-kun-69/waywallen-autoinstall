@@ -321,24 +321,15 @@ sudo dnf install -y --skip-unavailable \
 run_with_spinner "Configuring Git LFS" git lfs install
 
 if command -v conda >/dev/null 2>&1; then
-        run_with_spinner "Initializing Conda for the current user" conda init bash
-
-        # Load Conda's initialization into this running script.
-        CONDA_BASE="$(conda info --base)"
-        CONDA_SH="$CONDA_BASE/etc/profile.d/conda.sh"
-
-        if [[ -f "$CONDA_SH" ]]; then
-                # shellcheck source=/dev/null
-                source "$CONDA_SH"
-                info "Conda initialized; continuing installation."
+        if ! grep -q 'conda initialize' "$HOME/.bashrc" 2>/dev/null; then
+                run_with_spinner "Initializing Conda for the current user" \
+                        bash -c 'conda init; exit 0'
         else
-                error "Conda initialization script not found: $CONDA_SH"
-                exit 1
+                info "Conda already initialized in ~/.bashrc, skipping."
         fi
 else
         warn "Conda was not found; skipping conda init."
 fi
-
 # ------------------------------------------------------------
 # Download and build Waywallen
 # ------------------------------------------------------------
