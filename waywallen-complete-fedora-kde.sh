@@ -291,17 +291,14 @@ info "Installing required build dependencies"
 
 sudo dnf install -y --skip-unavailable \
         cmake conda gcc gcc-c++ make ninja-build nasm ccache \
-        pkgconf-pkg-config pipwire-devel libpipewire-0.3-dev\
-        clang clang-tools-extra llvm llvm-devel lld \
+        pkgconf-pkg-config pipwire-devel libpipewire-0.3-dev clang clang-tools-extra llvm llvm-devel lld \
         glslang glfw-devel \
         git git-lfs \
         curl gettext \
         rust cargo \
         vulkan-headers vulkan-loader vulkan-loader-devel \
-        libglvnd-devel libva libva-devel libva-utils\
-        mesa-libGL-devel mesa-libEGL-devel mesa-libGLES-devel mesa-libgbm-devel \
-        libdrm-devel libva-utils pipewire-devel\
-        pulseaudio-libs-devel pulseaudio-libs freetype-devel expat-devel \
+        libglvnd-devel libva libva-devel libva-utils mesa-libGL-devel mesa-libEGL-devel mesa-libGLES-devel mesa-libgbm-devel \
+        libdrm-devel libva-utils pipewire-devel pulseaudio-libs-devel pulseaudio-libs freetype-devel expat-devel \
         lz4-devel zlib-ng-compat-devel \
         wayland-devel wayland-protocols-devel \
         libX11-devel libXcomposite-devel libXdamage-devel \
@@ -366,17 +363,17 @@ CURRENT_STEP='Installing Waywallen'
 
 # Clean up any previous install to avoid stale files.
 if [[ -f "$HOME/.local/bin/waywallen" ]]; then
-    info "Previous Waywallen installation found; removing before reinstall."
-    run_with_spinner "Removing previous Waywallen installation" \
-        lito uninstall --prefix "$HOME/.local" --profile release || \
-        rm -f \
-            "$HOME/.local/bin/waywallen" \
-            "$HOME/.local/bin/waywallen-ui" \
-            "$HOME/.local/share/icons/hicolor/scalable/apps/org.waywallen.waywallen.svg"
+        info "Previous Waywallen installation found; removing before reinstall."
+        run_with_spinner "Removing previous Waywallen installation" \
+                lito uninstall --prefix "$HOME/.local" --profile release ||
+                rm -f \
+                        "$HOME/.local/bin/waywallen" \
+                        "$HOME/.local/bin/waywallen-ui" \
+                        "$HOME/.local/share/icons/hicolor/scalable/apps/org.waywallen.waywallen.svg"
 fi
 
 run_with_spinner "Installing Waywallen to ~/.local" \
-    lito install --prefix "$HOME/.local" --profile release
+        lito install --prefix "$HOME/.local" --profile release
 
 export QML_IMPORT_PATH="$HOME/.local/lib/qt6/qml"
 export LD_LIBRARY_PATH="$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -547,9 +544,32 @@ fi
 
 CURRENT_STEP='Installing the KDE Plasma package'
 
-run_with_spinner "Installing the Plasma wallpaper package" \
-        kpackagetool6 --type Plasma/Wallpaper \
-        --install "${packages[0]}"
+# Upgrade the existing package when it is already installed. If the upgrade
+# fails, remove the old package and install the newly built ZIP instead.
+if kpackagetool6 --type Plasma/Wallpaper --show org.waywallen.kde \
+        >/dev/null 2>&1; then
+        info "Existing KDE Plasma integration found; attempting upgrade."
+
+        if run_with_spinner "Upgrading the Plasma wallpaper package" \
+                kpackagetool6 --type Plasma/Wallpaper \
+                --upgrade "${packages[0]}"; then
+                info "KDE Plasma integration upgraded successfully."
+        else
+                warn "Upgrade failed; removing the existing integration and installing the new package."
+
+                run_with_spinner "Removing existing Plasma wallpaper package" \
+                        kpackagetool6 --type Plasma/Wallpaper \
+                        -r org.waywallen.kde
+
+                run_with_spinner "Installing the new Plasma wallpaper package" \
+                        kpackagetool6 --type Plasma/Wallpaper \
+                        --install "${packages[0]}"
+        fi
+else
+        run_with_spinner "Installing the Plasma wallpaper package" \
+                kpackagetool6 --type Plasma/Wallpaper \
+                --install "${packages[0]}"
+fi
 
 CURRENT_STEP='Installing the KDE Plasma extension system-wide'
 
@@ -586,7 +606,6 @@ if [[ ! -d "$PLUGIN_SRC/scripts" ]]; then
 fi
 
 cd "$PLUGIN_SRC/scripts"
-
 
 chmod +x build_waywallen_plugin.sh
 run_with_spinner "Building Open Wallpaper Engine plugin" \
