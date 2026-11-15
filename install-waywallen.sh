@@ -6,6 +6,11 @@ umask 022
  
 # Waywallen installer for Fedora, Debian/Ubuntu and Arch based distributions
 # with KDE Plasma. Run as a normal desktop user, never as root.
+#
+# Environment overrides:
+#   WAYWALLEN_TAG=latest|vX.Y.Z   Waywallen release to build (default: pinned tag).
+#                                 Pinned sub-repos only apply to the pinned tag.
+#   LITO_PROFILE=plain|release    Lito build profile (default: plain)
  
 # ------------------------------------------------------------
 # Configuration
@@ -14,16 +19,36 @@ umask 022
 RED=$'\033[0;31m'
 YELLOW=$'\033[0;33m'
 GREEN=$'\033[0;32m'
-CYAN=$'\033[0;36m'
 NC=$'\033[0m'
+ 
+# Toolchain requirements (from the AUR PKGBUILD).
+MIN_CLANG_MAJOR=22
+MIN_LITO_VERSION='0.8.5'
+LLVM_APT_VERSION=22
+ 
+# Waywallen release and the exact dependency commits known to work with it.
+# Update ALL of these together when bumping PINNED_TAG (copy from the AUR PKGBUILD).
+PINNED_TAG='v0.6.0'
+LUATO_COMMIT='e146c282593b6ee723d9d785789f260b45980967'
+WAVSEN_COMMIT='92f37f4748a17a36f946e64c8a4a0880cc9fbe23'
+QEXTRA_COMMIT='3fcb45c1722ca434d3abb89832f79d28756ab93f'
+QML_MATERIAL_COMMIT='bdb63fb3e61ae03923c484c58183cf17f68cbae4'
+VECGLTF_COMMIT='93d66944c5cb4e2897b6bf2eca79fc3fc714b66b'
+VRENTO_COMMIT='550e3c1f44ccafc064eb6b4b0b320764f5b65692'
+LUA_VERSION='5.5.1'
+LUA_SHA256='1c4b4068d67061f2a2231ad2b5422e77acea1487ea9890f6320af614f4373dce'
+ 
+WAYWALLEN_TAG=${WAYWALLEN_TAG:-$PINNED_TAG}
+LITO_PROFILE=${LITO_PROFILE:-plain}
  
 WORKDIR=''
 CURRENT_STEP='Initialisation'
 START_TIME=$SECONDS
 SUDO_KEEPALIVE_PID=''
 SPINNER_PID=''
-INTERRUPTED=0
 DISTRO_FAMILY='unknown'
+CONDA_EXE_PATH=''
+LLVM_BIN_DIR=''
  
 error() { printf '%s[ERROR]%s %s\n' "$RED" "$NC" "$*" >&2; }
 warn() { printf '%s[WARN]%s %s\n' "$YELLOW" "$NC" "$*" >&2; }
@@ -38,21 +63,18 @@ cleanup() {
         trap - EXIT ERR INT TERM
         set +e
  
-        # Stop any active build before removing its files.
         if [[ -n "$SPINNER_PID" ]]; then
                 kill "$SPINNER_PID" 2>/dev/null
                 wait "$SPINNER_PID" 2>/dev/null
                 SPINNER_PID=''
         fi
  
-        # Stop the sudo credential refresh process.
         if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
                 kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
                 wait "$SUDO_KEEPALIVE_PID" 2>/dev/null
                 SUDO_KEEPALIVE_PID=''
         fi
  
-        # Remove only the temporary directory created by this script.
         if [[ -n "$WORKDIR" && -d "$WORKDIR" ]]; then
                 rm -rf -- "$WORKDIR"
         fi
@@ -85,10 +107,8 @@ on_signal() {
         local signal=$1
         local status=$2
  
-        INTERRUPTED=1
         error "Received $signal; stopping installation."
  
-        # Terminate the active top-level background command.
         if [[ -n "$SPINNER_PID" ]]; then
                 kill -TERM "$SPINNER_PID" 2>/dev/null || true
         fi
@@ -131,7 +151,6 @@ run_with_spinner() {
  
         info "$label"
  
-        # Output is saved so failures can display the complete log.
         "$@" >"$logfile" 2>&1 &
         SPINNER_PID=$!
  
@@ -161,8 +180,13 @@ run_with_spinner() {
 }
  
 # ------------------------------------------------------------
-# GitHub release and download helpers
+# Generic helpers
 # ------------------------------------------------------------
+ 
+# version_ge A B: succeeds when version A >= version B.
+version_ge() {
+        [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n 1)" == "$2" ]]
+}
  
 latest_release() {
         local repo=$1
@@ -196,6 +220,32 @@ download_archive() {
                 -o "$destination"
 }
  
+# pin_dep NAME URL COMMIT: full clone checked out at an exact commit.
+# A real clone (not a tarball) is used so Git LFS objects can be fetched.
+pin_dep() {
+        local name=$1
+        local url=$2
+        local commit=$3
+        local dir="$WORKDIR/deps/$name"
+ 
+        git clone --quiet "$url" "$dir"
+        git -C "$dir" checkout --quiet "$commit"
+ 
+        if [[ -f "$dir/.gitattributes" ]] && grep -q 'filter=lfs' "$dir/.gitattributes"; then
+                git -C "$dir" lfs install --local
+                git -C "$dir" lfs pull
+        fi
+}
+ 
+fetch_lua() {
+        local tarball="$WORKDIR/deps/lua-${LUA_VERSION}.tar.gz"
+ 
+        curl --proto '=https' --tlsv1.2 -fSL --retry 3 --retry-delay 2 \
+                "https://www.lua.org/ftp/lua-${LUA_VERSION}.tar.gz" -o "$tarball"
+        printf '%s  %s\n' "$LUA_SHA256" "$tarball" | sha256sum -c -
+        tar -xzf "$tarball" -C "$WORKDIR/deps"
+}
+ 
 # ------------------------------------------------------------
 # Distribution detection and dependency installation
 # ------------------------------------------------------------
@@ -204,7 +254,6 @@ download_archive() {
 detect_distro_family() {
         local ids=" ${ID:-} ${ID_LIKE:-} "
  
-        # os-release lists ID_LIKE entries separated by spaces.
         ids=${ids//$'\n'/ }
         ids=${ids//$'\t'/ }
  
@@ -226,6 +275,7 @@ install_deps_fedora() {
                 git git-lfs \
                 curl gettext \
                 rust cargo \
+                sqlite-devel libzstd-devel \
                 vulkan-headers vulkan-loader vulkan-loader-devel \
                 libglvnd-devel libva libva-devel libva-utils mesa-libGL-devel mesa-libEGL-devel mesa-libGLES-devel mesa-libgbm-devel \
                 libdrm-devel pulseaudio-libs-devel pulseaudio-libs freetype-devel expat-devel \
@@ -248,15 +298,61 @@ install_deps_fedora() {
                 plasma-workspace kpackagetool6
 }
  
+# Adds the official apt.llvm.org repository and installs LLVM/Clang/LLD 22.
+install_llvm_apt() {
+        local codename=${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}
+        local keyring=/etc/apt/keyrings/apt.llvm.org.asc
+        local suite
+ 
+        if [[ -z "$codename" ]]; then
+                error "Could not determine the distribution codename for the LLVM repository."
+                return 1
+        fi
+ 
+        suite="llvm-toolchain-${codename}-${LLVM_APT_VERSION}"
+ 
+        info "Adding the official LLVM apt repository ($suite)"
+ 
+        sudo apt-get install -y ca-certificates curl gnupg
+ 
+        # Make sure LLVM publishes this version for this release.
+        if ! curl --proto '=https' --tlsv1.2 -fsSI \
+                "https://apt.llvm.org/${codename}/dists/${suite}/Release" >/dev/null 2>&1; then
+                error "apt.llvm.org has no LLVM ${LLVM_APT_VERSION} repository for '${codename}'."
+                error "Install clang >= ${MIN_CLANG_MAJOR} manually and re-run the script."
+                return 1
+        fi
+ 
+        sudo install -d -m 755 /etc/apt/keyrings
+        curl --proto '=https' --tlsv1.2 -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key |
+                sudo tee "$keyring" >/dev/null
+ 
+        printf 'deb [signed-by=%s] https://apt.llvm.org/%s/ %s main\n' \
+                "$keyring" "$codename" "$suite" |
+                sudo tee /etc/apt/sources.list.d/apt-llvm-org.list >/dev/null
+ 
+        sudo apt-get update
+ 
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                "clang-${LLVM_APT_VERSION}" \
+                "clang-tools-${LLVM_APT_VERSION}" \
+                "lld-${LLVM_APT_VERSION}" \
+                "llvm-${LLVM_APT_VERSION}" \
+                "llvm-${LLVM_APT_VERSION}-dev"
+ 
+        LLVM_BIN_DIR="/usr/lib/llvm-${LLVM_APT_VERSION}/bin"
+}
+ 
 install_deps_debian() {
         info "Installing required build dependencies (Debian/Ubuntu)"
  
         local packages=(
-                # Toolchain
+                # Toolchain (clang/llvm/lld come from apt.llvm.org below)
                 build-essential cmake gcc g++ make ninja-build nasm ccache
-                pkg-config clang clang-tools llvm llvm-dev lld
+                pkg-config
                 rustc cargo libssl-dev
                 git git-lfs curl gettext
+                libsqlite3-dev libzstd-dev
                 # Shaders, windowing, GPU
                 glslang-tools glslang-dev libglfw3-dev
                 libvulkan-dev vulkan-tools
@@ -288,9 +384,9 @@ install_deps_debian() {
         local available=()
         local missing=()
         local pkg
-        
+ 
         sudo apt-get update
-        
+ 
         # apt aborts on unknown package names, so filter the list first.
         for pkg in "${packages[@]}"; do
                 if apt-cache show "$pkg" >/dev/null 2>&1; then
@@ -301,16 +397,14 @@ install_deps_debian() {
         done
  
         if ((${#missing[@]} > 0)); then
+                local IFS=' '
                 warn "Packages not available on this release (skipped): ${missing[*]}"
         fi
  
         sudo env DEBIAN_FRONTEND=noninteractive \
                 apt-get install -y "${available[@]}"
-
-        
-        wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-        sudo sh Miniconda3-latest-Linux-x86_64.sh
-
+ 
+        install_llvm_apt
 }
  
 install_deps_arch() {
@@ -321,6 +415,7 @@ install_deps_arch() {
                 base-devel cmake gcc make ninja nasm ccache pkgconf
                 clang llvm lld rust
                 git git-lfs curl gettext
+                sqlite zstd
                 # Shaders, windowing, GPU (mesa ships GL/EGL/GLES/GBM headers)
                 glslang glfw vulkan-headers vulkan-icd-loader
                 libglvnd mesa libva libva-utils libdrm
@@ -353,14 +448,106 @@ install_deps_arch() {
         done
  
         if ((${#missing[@]} > 0)); then
+                local IFS=' '
                 warn "Packages not found in the sync databases (skipped): ${missing[*]}"
                 warn "If this looks wrong, run 'sudo pacman -Syu' and retry."
         fi
  
         sudo pacman -S --needed --noconfirm "${available[@]}"
-        
-        wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-        sudo sh Miniconda3-latest-Linux-x86_64.sh
+}
+ 
+# ------------------------------------------------------------
+# Toolchain checks and build environment
+# ------------------------------------------------------------
+ 
+check_toolchain() {
+        local clang_major
+        local lito_version
+ 
+        if ! command -v clang >/dev/null 2>&1; then
+                error "clang was not found. clang >= ${MIN_CLANG_MAJOR} is required."
+                return 1
+        fi
+ 
+        clang_major=$(clang --version | sed -nE 's/.*version ([0-9]+).*/\1/p' | head -n 1)
+ 
+        if ((${clang_major:-0} < MIN_CLANG_MAJOR)); then
+                error "clang >= ${MIN_CLANG_MAJOR} is required (found ${clang_major:-unknown})."
+                return 1
+        fi
+        info "clang $clang_major detected."
+ 
+        if ! command -v ld.lld >/dev/null 2>&1; then
+                error "lld (ld.lld) was not found; it is required by the build."
+                return 1
+        fi
+ 
+        lito_version=$(lito --version 2>/dev/null |
+                grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+ 
+        if [[ -z "$lito_version" ]]; then
+                warn "Could not determine the lito version; need >= ${MIN_LITO_VERSION}."
+        elif ! version_ge "$lito_version" "$MIN_LITO_VERSION"; then
+                error "lito >= ${MIN_LITO_VERSION} is required (found ${lito_version})."
+                return 1
+        else
+                info "lito $lito_version detected."
+        fi
+}
+ 
+setup_build_env() {
+        # Only meaningful with rustup; harmless to skip otherwise.
+        if command -v rustup >/dev/null 2>&1; then
+                export RUSTUP_TOOLCHAIN=stable
+        fi
+ 
+        # Link against system sqlite and zstd instead of bundled copies.
+        export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+        export ZSTD_SYS_USE_PKG_CONFIG=1
+ 
+        # https://github.com/llvm/llvm-project/issues/121709
+        export CXXFLAGS="${CXXFLAGS:-}"
+        CXXFLAGS="${CXXFLAGS//-Wp,-D_FORTIFY_SOURCE=3/}"
+ 
+        # --icf=safe is not supported by GNU ld.
+        export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=lld"
+}
+ 
+ensure_conda() {
+        local arch
+        local installer
+ 
+        if command -v conda >/dev/null 2>&1; then
+                CONDA_EXE_PATH=$(command -v conda)
+                return 0
+        fi
+ 
+        if [[ -x "$HOME/miniconda3/bin/conda" ]]; then
+                CONDA_EXE_PATH="$HOME/miniconda3/bin/conda"
+                return 0
+        fi
+ 
+        case "$(uname -m)" in
+        x86_64) arch='x86_64' ;;
+        aarch64 | arm64) arch='aarch64' ;;
+        *)
+                warn "No Miniconda build for $(uname -m); skipping Conda."
+                return 0
+                ;;
+        esac
+ 
+        installer="$WORKDIR/miniconda.sh"
+ 
+        run_with_spinner "Downloading Miniconda" \
+                curl --proto '=https' --tlsv1.2 -fsSL \
+                "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-${arch}.sh" \
+                -o "$installer"
+ 
+        # Batch mode as the normal user; installs to ~/miniconda3.
+        run_with_spinner "Installing Miniconda to ~/miniconda3" \
+                bash "$installer" -b -p "$HOME/miniconda3"
+ 
+        CONDA_EXE_PATH="$HOME/miniconda3/bin/conda"
 }
  
 # ------------------------------------------------------------
@@ -380,6 +567,7 @@ if ((EUID == 0)); then
 fi
  
 if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
         source /etc/os-release
 else
         warn "/etc/os-release not found; cannot detect the distribution."
@@ -397,7 +585,7 @@ arch) info "Detected Arch based distribution (${PRETTY_NAME:-${ID:-unknown}})." 
         ;;
 esac
  
-for cmd in bash curl tar git sudo mktemp sed head; do
+for cmd in bash curl tar git sudo mktemp sed head sort sha256sum; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
                 error "Required command not found: $cmd"
                 exit 1
@@ -429,6 +617,7 @@ sudo -v
 SUDO_KEEPALIVE_PID=$!
  
 WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/waywallen-install.XXXXXX")
+mkdir -p "$WORKDIR/deps"
  
 mkdir -p \
         "$HOME/.local/bin" \
@@ -437,30 +626,6 @@ mkdir -p \
         "$HOME/Downloads"
  
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
- 
-# ------------------------------------------------------------
-# Install Lito
-# ------------------------------------------------------------
- 
-CURRENT_STEP='Installing Lito'
- 
-run_with_spinner "Downloading Lito installer" \
-        curl --proto '=https' --tlsv1.2 -fsSL \
-        https://lito.litocpp.org/install.sh \
-        -o "$WORKDIR/lito-install.sh"
- 
-run_with_spinner "Installing Lito" \
-        bash "$WORKDIR/lito-install.sh"
- 
-if ! command -v lito >/dev/null 2>&1; then
-        # Accommodate installers that install into the standard user bin directory.
-        if [[ -x "$HOME/.local/bin/lito" ]]; then
-                export PATH="$HOME/.local/bin:$PATH"
-        else
-                error "Lito was not found on PATH after installation."
-                exit 1
-        fi
-fi
  
 # ------------------------------------------------------------
 # Install distribution dependencies
@@ -475,23 +640,63 @@ arch) install_deps_arch ;;
 *) warn "Skipping dependency installation (unknown distribution)." ;;
 esac
  
+# Prefer the versioned LLVM toolchain when it was installed separately.
+if [[ -n "$LLVM_BIN_DIR" && -d "$LLVM_BIN_DIR" ]]; then
+        export PATH="$LLVM_BIN_DIR:$PATH"
+fi
+ 
 run_with_spinner "Configuring Git LFS" git lfs install
  
-if command -v conda >/dev/null 2>&1; then
+# ------------------------------------------------------------
+# Install Lito
+# ------------------------------------------------------------
+ 
+CURRENT_STEP='Installing Lito'
+ 
+need_lito=1
+if command -v lito >/dev/null 2>&1; then
+        existing_lito=$(lito --version 2>/dev/null |
+                grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+        if [[ -n "$existing_lito" ]] && version_ge "$existing_lito" "$MIN_LITO_VERSION"; then
+                info "lito $existing_lito already installed; skipping installer."
+                need_lito=0
+        fi
+fi
+ 
+if ((need_lito)); then
+        run_with_spinner "Downloading Lito installer" \
+                curl --proto '=https' --tlsv1.2 -fsSL \
+                https://lito.litocpp.org/install.sh \
+                -o "$WORKDIR/lito-install.sh"
+ 
+        run_with_spinner "Installing Lito" \
+                bash "$WORKDIR/lito-install.sh"
+fi
+ 
+if ! command -v lito >/dev/null 2>&1; then
+        error "Lito was not found on PATH after installation."
+        exit 1
+fi
+ 
+CURRENT_STEP='Checking the toolchain'
+check_toolchain
+setup_build_env
+ 
+# ------------------------------------------------------------
+# Conda (needed by the Open Wallpaper Engine plugin build)
+# ------------------------------------------------------------
+ 
+CURRENT_STEP='Setting up Conda'
+ 
+ensure_conda
+ 
+if [[ -n "$CONDA_EXE_PATH" ]]; then
         if ! grep -q 'conda initialize' "$HOME/.bashrc" 2>/dev/null; then
                 run_with_spinner "Initializing Conda for the current user" \
-                        bash -c 'conda init; exit 0'
+                        bash -c '"$1" init bash || true' _ "$CONDA_EXE_PATH"
         else
                 info "Conda already initialized in ~/.bashrc, skipping."
         fi
-else
-        warn "Conda was not found; skipping conda init."
-        case "$DISTRO_FAMILY" in
-        debian | arch)
-                warn "Conda is not in the standard repositories on this distribution."
-                warn "Install Miniconda/Miniforge (Arch: AUR 'miniconda3') if the plugin build needs it."
-                ;;
-        esac
 fi
  
 # ------------------------------------------------------------
@@ -500,37 +705,95 @@ fi
  
 CURRENT_STEP='Downloading Waywallen'
  
-LATEST=$(latest_release waywallen/waywallen)
-info "Latest Waywallen release: $LATEST"
- 
-run_with_spinner "Downloading Waywallen source" \
-        download_archive waywallen/waywallen "$LATEST" \
-        "$WORKDIR/waywallen.tar.gz"
- 
-run_with_spinner "Extracting Waywallen source" \
-        tar -xzf "$WORKDIR/waywallen.tar.gz" -C "$WORKDIR"
- 
-WAYWALLEN_SRC="$WORKDIR/waywallen-${LATEST#v}"
- 
-if [[ ! -d "$WAYWALLEN_SRC" ]]; then
-        error "Waywallen source directory was not found: $WAYWALLEN_SRC"
-        exit 1
+if [[ "$WAYWALLEN_TAG" == 'latest' ]]; then
+        WAYWALLEN_TAG=$(latest_release waywallen/waywallen)
 fi
+info "Waywallen release: $WAYWALLEN_TAG"
+ 
+WAYWALLEN_SRC="$WORKDIR/waywallen"
+ 
+run_with_spinner "Cloning Waywallen $WAYWALLEN_TAG" \
+        git clone --quiet --depth 1 --branch "$WAYWALLEN_TAG" \
+        https://github.com/waywallen/waywallen.git "$WAYWALLEN_SRC"
  
 cd "$WAYWALLEN_SRC"
  
+# Pin sub-repositories only when building the release they were verified with.
+USE_PINS=0
+if [[ "$WAYWALLEN_TAG" == "$PINNED_TAG" ]]; then
+        USE_PINS=1
+else
+        warn "Waywallen $WAYWALLEN_TAG differs from pinned $PINNED_TAG."
+        warn "Skipping pinned dependencies; lito will fetch current versions."
+fi
+ 
+if ((USE_PINS)); then
+        CURRENT_STEP='Fetching pinned dependencies'
+ 
+        run_with_spinner "Fetching luato" \
+                pin_dep luato https://github.com/litocpp/luato.git "$LUATO_COMMIT"
+        run_with_spinner "Fetching wavsen" \
+                pin_dep wavsen https://github.com/hypengw/wavsen.git "$WAVSEN_COMMIT"
+        run_with_spinner "Fetching QExtra" \
+                pin_dep QExtra https://github.com/hypengw/QExtra.git "$QEXTRA_COMMIT"
+        run_with_spinner "Fetching vecgltf" \
+                pin_dep vecgltf https://github.com/vecren/vecgltf.git "$VECGLTF_COMMIT"
+        run_with_spinner "Fetching vrento" \
+                pin_dep vrento https://github.com/vecren/vrento.git "$VRENTO_COMMIT"
+        run_with_spinner "Fetching QmlMaterial (with LFS files)" \
+                pin_dep QmlMaterial https://github.com/hypengw/QmlMaterial.git "$QML_MATERIAL_COMMIT"
+        run_with_spinner "Fetching Lua $LUA_VERSION" fetch_lua
+ 
+        mkdir -p .lito
+        cat >.lito/config.toml <<EOF
+[patch."https://github.com/litocpp/luato.git"]
+path = "$WORKDIR/deps/luato"
+ 
+[patch."https://github.com/hypengw/wavsen.git"]
+path = "$WORKDIR/deps/wavsen"
+ 
+[patch."https://github.com/hypengw/QExtra.git"]
+path = "$WORKDIR/deps/QExtra"
+ 
+[patch."https://github.com/vecren/vecgltf.git"]
+path = "$WORKDIR/deps/vecgltf"
+ 
+[patch."https://github.com/vecren/vrento.git"]
+path = "$WORKDIR/deps/vrento"
+ 
+[patch."https://www.lua.org/ftp/lua-${LUA_VERSION}.tar.gz"]
+path = "$WORKDIR/deps/lua-${LUA_VERSION}"
+ 
+[patch."https://github.com/hypengw/QmlMaterial.git"]
+path = "$WORKDIR/deps/QmlMaterial"
+EOF
+fi
+ 
+CURRENT_STEP='Fetching Waywallen build dependencies'
+ 
+if ! run_with_spinner "Prefetching Cargo dependencies" \
+        cargo fetch --target host-tuple; then
+        warn "cargo fetch failed; the build will fetch crates on demand."
+fi
+ 
+run_with_spinner "Fetching Lito dependencies" lito fetch --all-features
+ 
 CURRENT_STEP='Building Waywallen'
  
-run_with_spinner "Building Waywallen (release)" \
-        lito build --profile release
+LITO_FLAGS=(--profile "$LITO_PROFILE")
+if [[ "$LITO_PROFILE" == 'plain' ]]; then
+        LITO_FLAGS+=(--use-env-flags)
+fi
+ 
+run_with_spinner "Building Waywallen ($LITO_PROFILE)" \
+        lito build "${LITO_FLAGS[@]}"
  
 CURRENT_STEP='Installing Waywallen'
  
-# Clean up any previous install to avoid stale files.
 if [[ -f "$HOME/.local/bin/waywallen" ]]; then
         info "Previous Waywallen installation found; removing before reinstall."
         run_with_spinner "Removing previous Waywallen installation" \
-                lito uninstall --prefix "$HOME/.local" --profile release ||
+                lito uninstall --prefix "$HOME/.local" --profile "$LITO_PROFILE" ||
                 rm -f \
                         "$HOME/.local/bin/waywallen" \
                         "$HOME/.local/bin/waywallen-ui" \
@@ -538,7 +801,7 @@ if [[ -f "$HOME/.local/bin/waywallen" ]]; then
 fi
  
 run_with_spinner "Installing Waywallen to ~/.local" \
-        lito install --prefix "$HOME/.local" --profile release
+        lito install --prefix "$HOME/.local" --profile "$LITO_PROFILE" --no-build
  
 export QML_IMPORT_PATH="$HOME/.local/lib/qt6/qml"
 export LD_LIBRARY_PATH="$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -654,6 +917,7 @@ CURRENT_STEP='Compiling layer-shell translations'
  
 shopt -s nullglob
 po_files=(po/layer-shell/*.po)
+shopt -u nullglob
  
 if ((${#po_files[@]} == 0)); then
         warn "No translation files were found in po/layer-shell."
@@ -697,11 +961,10 @@ CURRENT_STEP='Packaging the KDE Plasma extension'
 run_with_spinner "Packaging the KDE Plasma extension" \
         cmake --build build-kde --target package
  
-# Match the release tag and verify the result rather than passing an
-# unexpanded wildcard to kpackagetool6.
-packages=(build-kde/*.zip)
+# Verify the result rather than passing an unexpanded wildcard to kpackagetool6.
+kde_packages=(build-kde/*.zip)
  
-if ((${#packages[@]} == 0)) || [[ ! -f "${packages[0]}" ]]; then
+if ((${#kde_packages[@]} == 0)) || [[ ! -f "${kde_packages[0]}" ]]; then
         error "No Plasma package ZIP was produced."
         error "Check the package filename in build-kde/."
         exit 1
@@ -712,16 +975,15 @@ CURRENT_STEP='Installing the KDE Plasma package'
 if ! command -v kpackagetool6 >/dev/null 2>&1; then
         warn "kpackagetool6 was not found; skipping Plasma wallpaper package install."
         warn "Install it (Debian/Ubuntu: kpackagetool6 or libkf6package-bin, Arch: kpackage)"
-        warn "and run: kpackagetool6 --type Plasma/Wallpaper --install ${packages[0]}"
-# Upgrade the existing package when it is already installed. If the upgrade
-# fails, remove the old package and install the newly built ZIP instead.
+        warn "and run: kpackagetool6 --type Plasma/Wallpaper --install ${kde_packages[0]}"
+# Upgrade the existing package when already installed; on failure, reinstall.
 elif kpackagetool6 --type Plasma/Wallpaper --show org.waywallen.kde \
         >/dev/null 2>&1; then
         info "Existing KDE Plasma integration found; attempting upgrade."
  
         if run_with_spinner "Upgrading the Plasma wallpaper package" \
                 kpackagetool6 --type Plasma/Wallpaper \
-                --upgrade "${packages[0]}"; then
+                --upgrade "${kde_packages[0]}"; then
                 info "KDE Plasma integration upgraded successfully."
         else
                 warn "Upgrade failed; removing the existing integration and installing the new package."
@@ -732,12 +994,12 @@ elif kpackagetool6 --type Plasma/Wallpaper --show org.waywallen.kde \
  
                 run_with_spinner "Installing the new Plasma wallpaper package" \
                         kpackagetool6 --type Plasma/Wallpaper \
-                        --install "${packages[0]}"
+                        --install "${kde_packages[0]}"
         fi
 else
         run_with_spinner "Installing the Plasma wallpaper package" \
                 kpackagetool6 --type Plasma/Wallpaper \
-                --install "${packages[0]}"
+                --install "${kde_packages[0]}"
 fi
  
 CURRENT_STEP='Installing the KDE Plasma extension system-wide'
@@ -764,21 +1026,29 @@ run_with_spinner "Extracting Open Wallpaper Engine source" \
         tar -xzf "$WORKDIR/open-wallpaper-engine.tar.gz" -C "$WORKDIR"
  
 PLUGIN_SRC="$WORKDIR/open-wallpaper-engine-${PLUGIN#v}"
+ 
+if [[ ! -d "$PLUGIN_SRC" ]]; then
+        error "Open Wallpaper Engine source directory was not found: $PLUGIN_SRC"
+        exit 1
+fi
+ 
 CURRENT_STEP='Building Open Wallpaper Engine plugin'
 export PYTHONNOUSERSITE=1
  
-if command -v conda >/dev/null 2>&1; then
-        # Conda's shell hook is required to use 'conda activate' in a script,
-        # and its activation scripts are not safe under 'set -u'.
+if [[ -n "$CONDA_EXE_PATH" ]]; then
+        # Conda's activation scripts are not safe under 'set -u'.
         set +u
-        eval "$(conda shell.bash hook)"
+        eval "$("$CONDA_EXE_PATH" shell.bash hook)"
         conda activate base
         set -u
 else
         warn "Conda not available; building the plugin with the system Python."
 fi
  
-lito build --profile release
+cd "$PLUGIN_SRC"
+ 
+run_with_spinner "Building Open Wallpaper Engine dependencies" \
+        lito build --profile release
  
 if [[ ! -d "$PLUGIN_SRC/scripts" ]]; then
         error "Open Wallpaper Engine build scripts were not found."
@@ -836,6 +1106,5 @@ info "Plugin package: $PLUGIN_ZIP"
 info "Import the ZIP into Waywallen."
 info "Restart your system if required."
  
-# Successful exit triggers cleanup automatically.
 exit 0
  
