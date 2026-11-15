@@ -255,7 +255,7 @@ install_deps_debian() {
                 # Toolchain
                 build-essential cmake gcc g++ make ninja-build nasm ccache
                 pkg-config clang clang-tools llvm llvm-dev lld
-                rustc cargo
+                rustc cargo libssl-dev
                 git git-lfs curl gettext
                 # Shaders, windowing, GPU
                 glslang-tools glslang-dev libglfw3-dev
@@ -288,9 +288,9 @@ install_deps_debian() {
         local available=()
         local missing=()
         local pkg
- 
+        
         sudo apt-get update
- 
+        
         # apt aborts on unknown package names, so filter the list first.
         for pkg in "${packages[@]}"; do
                 if apt-cache show "$pkg" >/dev/null 2>&1; then
@@ -306,6 +306,11 @@ install_deps_debian() {
  
         sudo env DEBIAN_FRONTEND=noninteractive \
                 apt-get install -y "${available[@]}"
+
+        
+        wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+        sudo sh Miniconda3-latest-Linux-x86_64.sh
+
 }
  
 install_deps_arch() {
@@ -353,6 +358,9 @@ install_deps_arch() {
         fi
  
         sudo pacman -S --needed --noconfirm "${available[@]}"
+        
+        wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+        sudo sh Miniconda3-latest-Linux-x86_64.sh
 }
  
 # ------------------------------------------------------------

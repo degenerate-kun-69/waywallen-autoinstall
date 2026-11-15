@@ -6,8 +6,8 @@ will be forked and merged into main waywallen repo when tested for all distros a
 
 ```bash
 git clone https://github.com/degenerate-kun-69/waywallen-autoinstall.git && cd waywallen-autoinstall
-chmod +x waywallen-complete-fedora-kde.sh
-./waywallen-complete-fedora-kde.sh
+chmod +x install-waywallen.sh
+./install-waywallen.sh
 ```
 
 license: MIT
