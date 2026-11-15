@@ -46,6 +46,7 @@ CURRENT_STEP='Initialisation'
 START_TIME=$SECONDS
 SUDO_KEEPALIVE_PID=''
 SPINNER_PID=''
+CURRENT_LOGFILE=''
 DISTRO_FAMILY='unknown'
 CONDA_EXE_PATH=''
 LLVM_BIN_DIR=''
@@ -73,6 +74,11 @@ cleanup() {
                 kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
                 wait "$SUDO_KEEPALIVE_PID" 2>/dev/null
                 SUDO_KEEPALIVE_PID=''
+        fi
+
+        if [[ -n "$CURRENT_LOGFILE" && -f "$CURRENT_LOGFILE" ]]; then
+                rm -f -- "$CURRENT_LOGFILE"
+                CURRENT_LOGFILE=''
         fi
 
         if [[ -n "$WORKDIR" && -d "$WORKDIR" ]]; then
@@ -147,7 +153,10 @@ run_with_spinner() {
         local logfile
         local status
 
-        logfile=$(mktemp "${TMPDIR:-/tmp}/waywallen-log.XXXXXX")
+        local logdir="${WORKDIR:-${TMPDIR:-/tmp}}"
+        [[ -d "$logdir" ]] || logdir="${TMPDIR:-/tmp}"
+        logfile=$(mktemp "$logdir/waywallen-log.XXXXXX")
+        CURRENT_LOGFILE="$logfile"
 
         info "$label"
 
@@ -167,6 +176,7 @@ run_with_spinner() {
         if ((status == 0)); then
                 printf '%s[OK]%s %s\n' "$GREEN" "$NC" "$label"
                 rm -f -- "$logfile"
+                CURRENT_LOGFILE=''
                 return 0
         fi
 
@@ -176,6 +186,7 @@ run_with_spinner() {
         printf '%s\n' '------ End command output ------' >&2
 
         rm -f -- "$logfile"
+        CURRENT_LOGFILE=''
         return "$status"
 }
 
@@ -537,8 +548,11 @@ setup_build_env() {
         export ZSTD_SYS_USE_PKG_CONFIG=1
 
         # https://github.com/llvm/llvm-project/issues/121709
-        export CXXFLAGS="${CXXFLAGS:-}"
+        export CXXFLAGS="${CXXFLAGS:-} -U_FORTIFY_SOURCE"
         CXXFLAGS="${CXXFLAGS//-Wp,-D_FORTIFY_SOURCE=3/}"
+        CXXFLAGS="${CXXFLAGS//-Wp,-D_FORTIFY_SOURCE=2/}"
+        CXXFLAGS="${CXXFLAGS//-D_FORTIFY_SOURCE=3/}"
+        CXXFLAGS="${CXXFLAGS//-D_FORTIFY_SOURCE=2/}"
 
         # --icf=safe is not supported by GNU ld.
         export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=lld"
@@ -651,11 +665,13 @@ SUDO_KEEPALIVE_PID=$!
 WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/waywallen-install.XXXXXX")
 mkdir -p "$WORKDIR/deps"
 
+DOWNLOAD_DIR=$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")
+
 mkdir -p \
         "$HOME/.local/bin" \
         "$HOME/.local/share/applications" \
         "$HOME/.local/share/locale" \
-        "$HOME/Downloads"
+        "$DOWNLOAD_DIR"
 
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
@@ -835,8 +851,8 @@ fi
 run_with_spinner "Installing Waywallen to ~/.local" \
         lito install --prefix "$HOME/.local" --profile "$LITO_PROFILE" --no-build
 
-export QML_IMPORT_PATH="$HOME/.local/lib/qt6/qml"
-export LD_LIBRARY_PATH="$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export QML_IMPORT_PATH="$HOME/.local/lib/qt6/qml:$HOME/.local/lib64/qt6/qml${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}"
+export LD_LIBRARY_PATH="$HOME/.local/lib:$HOME/.local/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 # ------------------------------------------------------------
 # Configure Waywallen desktop entry and launcher
@@ -851,8 +867,8 @@ cat >"$HOME/.local/bin/waywallen-start" <<'EOF'
 set -e
 
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-export QML_IMPORT_PATH="$HOME/.local/lib/qt6/qml"
-export LD_LIBRARY_PATH="$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export QML_IMPORT_PATH="$HOME/.local/lib/qt6/qml:$HOME/.local/lib64/qt6/qml${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}"
+export LD_LIBRARY_PATH="$HOME/.local/lib:$HOME/.local/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 exec "$HOME/.local/bin/waywallen" \
     --ui "$HOME/.local/bin/waywallen-ui" \
@@ -1083,7 +1099,12 @@ run_with_spinner "Building Open Wallpaper Engine dependencies" \
         lito build --profile release
 
 if [[ ! -d "$PLUGIN_SRC/scripts" ]]; then
-        error "Open Wallpaper Engine build scripts were not found."
+        error "Open Wallpaper Engine build scripts directory was not found: $PLUGIN_SRC/scripts"
+        exit 1
+fi
+
+if [[ ! -f "$PLUGIN_SRC/scripts/build_waywallen_plugin.sh" ]]; then
+        error "Build script not found: $PLUGIN_SRC/scripts/build_waywallen_plugin.sh"
         exit 1
 fi
 
@@ -1104,7 +1125,7 @@ if ((${#plugin_packages[@]} == 0)) ||
         exit 1
 fi
 
-PLUGIN_ZIP="$HOME/Downloads/$(basename "${plugin_packages[0]}")"
+PLUGIN_ZIP="$DOWNLOAD_DIR/$(basename "${plugin_packages[0]}")"
 
 run_with_spinner "Copying plugin package to Downloads" \
         install -Dm644 "${plugin_packages[0]}" "$PLUGIN_ZIP"
