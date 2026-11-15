@@ -281,7 +281,7 @@ detect_distro_family() {
 
         case "$ids" in
         *" fedora "* | *" rhel "* | *" centos "*) printf 'fedora\n' ;;
-        *" arch "*) printf 'arch\n' ;;
+        *" arch "* | *" archlinux "*) printf 'arch\n' ;;
         *" debian "* | *" ubuntu "*) printf 'debian\n' ;;
         *) printf 'unknown\n' ;;
         esac
@@ -296,7 +296,7 @@ install_deps_fedora() {
                 glslang glfw-devel \
                 git git-lfs \
                 curl gettext \
-                rust cargo \
+                rust cargo kf6-kpackage kf6-kpackage-devel plasma-workspace\
                 sqlite-devel libzstd-devel \
                 vulkan-headers vulkan-loader vulkan-loader-devel \
                 libglvnd-devel libva libva-devel libva-utils mesa-libGL-devel mesa-libEGL-devel mesa-libGLES-devel mesa-libgbm-devel \
@@ -316,8 +316,7 @@ install_deps_fedora() {
                 qt6-qttools-devel \
                 qt6-qtgrpc-devel \
                 qt6-qtshadertools-devel \
-                ffmpeg-free-devel libdav1d-devel \
-                plasma-workspace kpackagetool6
+                ffmpeg-free-devel libdav1d-devel
 }
 
 # Adds the official apt.llvm.org repository and installs LLVM/Clang/LLD 22.
@@ -400,7 +399,7 @@ install_deps_debian() {
                 qt6-l10n-tools qt6-grpc-dev qt6-shadertools-dev
                 # KDE Plasma / KDE Frameworks 6
                 plasma-workspace plasma-workspace-dev
-                libkf6package-dev kpackagetool6
+                libkf6package-dev kpackagetool6 libkf6package-bin
         )
 
         local available=()
@@ -456,12 +455,20 @@ install_deps_arch() {
                 plasma-workspace kpackage
         )
 
+        local needed=()
+        mapfile -t needed < <(pacman -T "${packages[@]}" 2>/dev/null || true)
+
+        if ((${#needed[@]} == 0)); then
+                info "All Arch build dependencies are already satisfied."
+                return 0
+        fi
+
         local available=()
         local missing=()
         local pkg
 
         # pacman aborts on unknown targets, so filter the list first.
-        for pkg in "${packages[@]}"; do
+        for pkg in "${needed[@]}"; do
                 if pacman -Si "$pkg" >/dev/null 2>&1; then
                         available+=("$pkg")
                 else
@@ -475,7 +482,9 @@ install_deps_arch() {
                 warn "If this looks wrong, run 'sudo pacman -Syu' and retry."
         fi
 
-        sudo pacman -S --needed --noconfirm "${available[@]}"
+        if ((${#available[@]} > 0)); then
+                sudo pacman -S --needed --noconfirm "${available[@]}"
+        fi
 }
 
 # ------------------------------------------------------------
@@ -567,7 +576,7 @@ ensure_conda() {
 
         # Batch mode as the normal user; installs to ~/miniconda3.
         run_with_spinner "Installing Miniconda to ~/miniconda3" \
-                bash "$installer" -b -p "$HOME/miniconda3"
+                bash "$installer" -b -u -p "$HOME/miniconda3"
 
         CONDA_EXE_PATH="$HOME/miniconda3/bin/conda"
 }
@@ -632,8 +641,9 @@ sudo -v
 # Refresh sudo credentials while lengthy builds are running.
 (
         while true; do
+                
+                sudo -n -v 2>/dev/null || true
                 sleep 50
-                sudo -n -v || exit
         done
 ) &
 SUDO_KEEPALIVE_PID=$!
@@ -715,7 +725,7 @@ ensure_conda
 if [[ -n "$CONDA_EXE_PATH" ]]; then
         if ! grep -q 'conda initialize' "$HOME/.bashrc" 2>/dev/null; then
                 run_with_spinner "Initializing Conda for the current user" \
-                        bash -c '"$1" init bash || true' _ "$CONDA_EXE_PATH"
+                        "$CONDA_EXE_PATH" init bash || true
         else
                 info "Conda already initialized in ~/.bashrc, skipping."
         fi
@@ -794,7 +804,7 @@ fi
 CURRENT_STEP='Fetching Waywallen build dependencies'
 
 if ! run_with_spinner "Prefetching Cargo dependencies" \
-        cargo fetch --target host-tuple; then
+        cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"; then
         warn "cargo fetch failed; the build will fetch crates on demand."
 fi
 
